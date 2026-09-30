@@ -65,82 +65,81 @@ jobs:
           find source -type f | head -30
 
       - name: AUTO-DETECT & BUILD
-        run: |
-          echo "════════════════════════════════════════"
-          echo "  AUTO-DETECT MODE"
-          echo "════════════════════════════════════════"
-          
-          # MODE 1: APK mentah
-          APK_FILE=$(find source -name "*.apk" -type f | head -1)
-          if [ -n "$APK_FILE" ]; then
-            echo "✓ MODE 1: Ketemu APK mentah: $APK_FILE"
-            cp "$APK_FILE" unsigned.apk
-            exit 0
-          fi
-          
-          # MODE 2: apktool (ada apktool.yml)
-          APKTOOL_YML=$(find source -name "apktool.yml" -type f | head -1)
-          if [ -n "$APKTOOL_YML" ]; then
-            echo "✓ MODE 2: Ketemu apktool.yml: $APKTOOL_YML"
-            APKTOOL_DIR=$(dirname "$APKTOOL_YML")
-            cd "$APKTOOL_DIR"
-            apktool b -o $GITHUB_WORKSPACE/unsigned.apk 2>&1 | tail -20
-            cd $GITHUB_WORKSPACE
-            if [ -f unsigned.apk ]; then
-              echo "✓ apktool b sukses"
-              exit 0
-            fi
-          fi
-          
-          # MODE 3: Gradle (ada build.gradle)
-          GRADLE_FILE=$(find source -name "build.gradle" -o -name "build.gradle.kts" | head -1)
-          if [ -n "$GRADLE_FILE" ]; then
-            echo "✓ MODE 3: Ketemu build.gradle: $GRADLE_FILE"
-            GRADLE_DIR=$(dirname "$GRADLE_FILE")
-            cd "$GRADLE_DIR"
-            chmod +x gradlew 2>/dev/null || true
-            
-            if [ -f "gradlew" ]; then
-              echo "── Pake gradlew ──"
-              ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
-            else
-              echo "── Pake gradle global ──"
-              gradle assembleDebug --no-daemon 2>&1 | tail -30
-            fi
-            
-            APK_RESULT=$(find . -name "*.apk" -path "*/build/outputs/*" | head -1)
-            if [ -z "$APK_RESULT" ]; then
-              APK_RESULT=$(find . -name "*.apk" -type f | head -1)
-            fi
-            
-            if [ -n "$APK_RESULT" ]; then
-              echo "✓ Gradle build sukses: $APK_RESULT"
-              cp "$APK_RESULT" $GITHUB_WORKSPACE/unsigned.apk
-              exit 0
-            fi
-          fi
-          
-          # MODE 4: Cari .apk di mana aja
-          echo "── MODE 4: Cari APK di mana aja ──"
-          ANY_APK=$(find source -name "*.apk" -type f | head -1)
-          if [ -n "$ANY_APK" ]; then
-            echo "✓ Ketemu: $ANY_APK"
-            cp "$ANY_APK" unsigned.apk
-            exit 0
-          fi
-          
-          echo "✗ SEMUA MODE GAGAL! Isi ZIP lu:"
-          find source -type f
-          exit 1
-
-      - name: Cek Hasil Build
-        run: |
-          if [ ! -f unsigned.apk ]; then
-            echo "✗ unsigned.apk NGGAK ADA!"
-            exit 1
-          fi
-          ls -la unsigned.apk
-          file unsigned.apk
+  run: |
+    echo "════════════════════════════════════════"
+    echo "  AUTO-DETECT MODE"
+    echo "════════════════════════════════════════"
+    
+    WORKSPACE="$GITHUB_WORKSPACE"
+    echo "Workspace: $WORKSPACE"
+    ls -la "$WORKSPACE/source/" | head -10
+    
+    # MODE 1: APK mentah
+    APK_FILE=$(find "$WORKSPACE/source" -name "*.apk" -type f | head -1)
+    if [ -n "$APK_FILE" ]; then
+      echo "✓ MODE 1: Ketemu APK mentah: $APK_FILE"
+      cp "$APK_FILE" "$WORKSPACE/unsigned.apk"
+      ls -la "$WORKSPACE/unsigned.apk"
+      exit 0
+    fi
+    
+    # MODE 2: apktool
+    APKTOOL_YML=$(find "$WORKSPACE/source" -name "apktool.yml" -type f | head -1)
+    if [ -n "$APKTOOL_YML" ]; then
+      echo "✓ MODE 2: Ketemu apktool.yml: $APKTOOL_YML"
+      APKTOOL_DIR=$(dirname "$APKTOOL_YML")
+      cd "$APKTOOL_DIR"
+      apktool b -o "$WORKSPACE/unsigned.apk" 2>&1 | tail -20
+      cd "$WORKSPACE"
+      if [ -f "$WORKSPACE/unsigned.apk" ]; then
+        echo "✓ apktool b sukses"
+        ls -la "$WORKSPACE/unsigned.apk"
+        exit 0
+      fi
+    fi
+    
+    # MODE 3: Gradle
+    GRADLE_FILE=$(find "$WORKSPACE/source" -name "build.gradle" -o -name "build.gradle.kts" | head -1)
+    if [ -n "$GRADLE_FILE" ]; then
+      echo "✓ MODE 3: Ketemu build.gradle: $GRADLE_FILE"
+      GRADLE_DIR=$(dirname "$GRADLE_FILE")
+      cd "$GRADLE_DIR"
+      
+      # Paksa pake gradle global, skip wrapper
+      echo "── Pake gradle global ──"
+      gradle assembleDebug --no-daemon 2>&1 | tail -40
+      
+      APK_RESULT=$(find . -name "*.apk" -path "*/build/outputs/*" | head -1)
+      if [ -z "$APK_RESULT" ]; then
+        APK_RESULT=$(find "$GRADLE_DIR" -name "*.apk" -type f | head -1)
+      fi
+      
+      if [ -n "$APK_RESULT" ]; then
+        echo "✓ Gradle build sukses: $APK_RESULT"
+        cp "$APK_RESULT" "$WORKSPACE/unsigned.apk"
+        cd "$WORKSPACE"
+        ls -la "$WORKSPACE/unsigned.apk"
+        exit 0
+      else
+        echo "✗ Gradle build gagal, APK nggak ketemu"
+        find "$GRADLE_DIR" -name "*.apk" 2>/dev/null
+        cd "$WORKSPACE"
+      fi
+    fi
+    
+    # MODE 4: Cari APK di mana aja
+    echo "── MODE 4: Cari APK di mana aja ──"
+    ANY_APK=$(find "$WORKSPACE" -name "*.apk" -type f 2>/dev/null | head -1)
+    if [ -n "$ANY_APK" ]; then
+      echo "✓ Ketemu: $ANY_APK"
+      cp "$ANY_APK" "$WORKSPACE/unsigned.apk"
+      ls -la "$WORKSPACE/unsigned.apk"
+      exit 0
+    fi
+    
+    echo "✗ SEMUA MODE GAGAL! Isi ZIP lu:"
+    find "$WORKSPACE/source" -type f 2>/dev/null | head -50
+    exit 1
 
       - name: Generate Keystore
         run: |
