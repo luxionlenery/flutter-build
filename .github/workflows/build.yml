@@ -1,5 +1,8 @@
 name: Build APK
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -56,12 +59,6 @@ jobs:
           
           echo "── Verifikasi build-tools ──"
           ls -la $ANDROID_HOME/build-tools/ || echo "✗ build-tools KOSONG!"
-          
-          echo "── Verifikasi zipalign ──"
-          find $ANDROID_HOME -name "zipalign" -type f 2>/dev/null || echo "✗ zipalign nggak ketemu!"
-          
-          echo "── Verifikasi apksigner ──"
-          find $ANDROID_HOME -name "apksigner" -type f 2>/dev/null || echo "✗ apksigner nggak ketemu!"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -79,19 +76,12 @@ jobs:
       - name: HAPUS REFERENSI ICON DI MANIFEST
         run: |
           WORKSPACE="$GITHUB_WORKSPACE"
-          echo "════════════════════════════════════════"
-          echo "  HAPUS REFERENSI ICON"
-          echo "════════════════════════════════════════"
-          
           MANIFEST=$(find "$WORKSPACE/source" -name "AndroidManifest.xml" -type f | head -1)
           if [ -z "$MANIFEST" ]; then
             echo "✗ AndroidManifest.xml nggak ketemu!"
             exit 1
           fi
           echo "✓ Manifest: $MANIFEST"
-          
-          echo "── Sebelum dibersihin ──"
-          grep -n "icon\|roundIcon\|logo\|banner" "$MANIFEST" || echo "(nggak ada referensi icon)"
           
           sed -i 's/[[:space:]]*android:icon="[^"]*"//g' "$MANIFEST"
           sed -i 's/[[:space:]]*android:roundIcon="[^"]*"//g' "$MANIFEST"
@@ -100,34 +90,25 @@ jobs:
           
           echo "── Sesudah dibersihin ──"
           grep -n "icon\|roundIcon\|logo\|banner" "$MANIFEST" || echo "(✅ semua referensi icon udah dihapus)"
-          echo "✓ SELESAI"
 
       - name: BUILD APK
         run: |
-          echo "════════════════════════════════════════"
-          echo "  BUILD APK"
-          echo "════════════════════════════════════════"
-          
           WORKSPACE="$GITHUB_WORKSPACE"
           
           GRADLE_FILE=$(find "$WORKSPACE/source" -name "build.gradle" -o -name "build.gradle.kts" | head -1)
           if [ -z "$GRADLE_FILE" ]; then
             echo "✗ build.gradle nggak ketemu!"
-            find "$WORKSPACE/source" -type f | head -30
             exit 1
           fi
           
           GRADLE_DIR=$(dirname "$GRADLE_FILE")
-          echo "✓ Gradle dir: $GRADLE_DIR"
           cd "$GRADLE_DIR"
           
           if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
-            echo "── Bikin settings.gradle ──"
             echo "include ':app'" > settings.gradle
             echo "rootProject.name = 'app'" >> settings.gradle
           fi
           
-          echo "── Running gradle assembleDebug ──"
           gradle assembleDebug --no-daemon 2>&1 | tail -50
           
           APK_RESULT=$(find "$GRADLE_DIR" -name "*.apk" -path "*/build/outputs/*" | head -1)
@@ -137,13 +118,11 @@ jobs:
           
           if [ -z "$APK_RESULT" ]; then
             echo "✗ APK nggak ketemu!"
-            find "$GRADLE_DIR" -name "*.apk" 2>/dev/null
             exit 1
           fi
           
           echo "✓ APK: $APK_RESULT"
           cp "$APK_RESULT" "$WORKSPACE/unsigned.apk"
-          ls -la "$WORKSPACE/unsigned.apk"
 
       - name: Generate Keystore
         run: |
@@ -159,49 +138,20 @@ jobs:
 
       - name: Zipalign & Sign
         run: |
-          echo "════════════════════════════════════════"
-          echo "  ZIPALIGN & SIGN"
-          echo "════════════════════════════════════════"
-          
-          echo "── Cari build-tools ──"
           BUILD_TOOLS=$(find $ANDROID_HOME/build-tools -maxdepth 1 -type d | sort -V | tail -1)
-          if [ -z "$BUILD_TOOLS" ]; then
-            echo "✗ build-tools KOSONG! Cari zipalign & apksigner manual..."
-            ZIPALIGN=$(find $ANDROID_HOME -name "zipalign" -type f 2>/dev/null | head -1)
-            APKSIGNER=$(find $ANDROID_HOME -name "apksigner" -type f 2>/dev/null | head -1)
-            echo "zipalign: $ZIPALIGN"
-            echo "apksigner: $APKSIGNER"
-          else
-            echo "✓ BUILD_TOOLS: $BUILD_TOOLS"
-            ZIPALIGN="$BUILD_TOOLS/zipalign"
-            APKSIGNER="$BUILD_TOOLS/apksigner"
-          fi
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
           
           if [ ! -f "$ZIPALIGN" ]; then
-            echo "✗ zipalign nggak ketemu! Install ulang..."
-            sdkmanager "build-tools;34.0.0" 2>&1 | tail -5
-            BUILD_TOOLS=$(find $ANDROID_HOME/build-tools -maxdepth 1 -type d | sort -V | tail -1)
-            ZIPALIGN="$BUILD_TOOLS/zipalign"
-            APKSIGNER="$BUILD_TOOLS/apksigner"
-          fi
-          
-          if [ ! -f "$ZIPALIGN" ]; then
-            echo "✗ ZIPALIGN TETEP NGGAK KETEMU!"
-            find $ANDROID_HOME -name "*align*" 2>/dev/null
+            echo "✗ zipalign nggak ketemu!"
             exit 1
           fi
-          
-          echo "✓ zipalign: $ZIPALIGN"
-          echo "✓ apksigner: $APKSIGNER"
           
           SAFE_NAME=$(echo "${{ github.event.inputs.app_name }}" | tr -cd 'A-Za-z0-9_-')
           [ -z "$SAFE_NAME" ] && SAFE_NAME="app"
           OUTPUT_NAME="${SAFE_NAME}.apk"
           
-          echo "── Zipalign ──"
           "$ZIPALIGN" -v 4 unsigned.apk aligned.apk
-          
-          echo "── Sign ──"
           "$APKSIGNER" sign \
             --ks debug.keystore \
             --ks-pass pass:android \
@@ -217,8 +167,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.build_tag }}"
+          echo "── Uploading $OUTPUT_APK ke release: $TAG ──"
+          
           if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "── Release udah ada, upload file ──"
             gh release upload "$TAG" "$OUTPUT_APK" --clobber --repo "${{ github.repository }}"
+            echo "✓ Uploaded ke existing release"
           else
+            echo "── Release belum ada, bikin baru ──"
             gh release create "$TAG" "$OUTPUT_APK" --title "$TAG" --notes "Auto-built" --repo "${{ github.repository }}"
+            echo "✓ Created new release"
           fi
