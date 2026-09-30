@@ -69,7 +69,7 @@ jobs:
         run: |
           WORKSPACE="$GITHUB_WORKSPACE"
           echo "════════════════════════════════════════"
-          echo "  FIX ICON & MANIFEST"
+          echo "  FIX ICON & MANIFEST (AGRESIF)"
           echo "════════════════════════════════════════"
           
           MANIFEST=$(find "$WORKSPACE/source" -name "AndroidManifest.xml" -path "*/app/src/main/*" | head -1)
@@ -77,39 +77,67 @@ jobs:
             MANIFEST=$(find "$WORKSPACE/source" -name "AndroidManifest.xml" | head -1)
           fi
           
-          if [ -n "$MANIFEST" ]; then
-            echo "✓ Manifest: $MANIFEST"
-            echo "── Isi manifest sebelum fix ──"
-            grep -n "icon" "$MANIFEST" || echo "(nggak ada baris icon)"
-            
-            # Ganti semua referensi mipmap/ic_launcher ke drawable/sync
-            sed -i 's|@mipmap/ic_launcher_round|@drawable/sync|g' "$MANIFEST"
-            sed -i 's|@mipmap/ic_launcher|@drawable/sync|g' "$MANIFEST"
-            sed -i 's|@mipmap/ic_launcher_foreground|@drawable/sync|g' "$MANIFEST"
-            sed -i 's|@mipmap/ic_launcher_background|@drawable/sync|g' "$MANIFEST"
-            
-            echo "── Isi manifest sesudah fix ──"
-            grep -n "icon" "$MANIFEST" || echo "(nggak ada baris icon)"
-            
-            # Pindahin sync.jpg ke res/drawable
-            APP_DIR=$(dirname "$(dirname "$MANIFEST")")
-            DRAWABLE_DIR="$APP_DIR/res/drawable"
-            mkdir -p "$DRAWABLE_DIR"
-            
-            SYNC_JPG=$(find "$WORKSPACE/source" -name "sync.jpg" | head -1)
-            if [ -n "$SYNC_JPG" ]; then
-              cp "$SYNC_JPG" "$DRAWABLE_DIR/sync.jpg"
-              echo "✓ sync.jpg dipindah ke: $DRAWABLE_DIR/sync.jpg"
-            else
-              echo "⚠ sync.jpg nggak ketemu, bikin placeholder"
-              # Bikin 1x1 pixel jpg sebagai fallback
-              echo "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==" | base64 -d > "$DRAWABLE_DIR/sync.jpg"
-            fi
-            
-            ls -la "$DRAWABLE_DIR/"
-          else
+          if [ -z "$MANIFEST" ]; then
             echo "✗ AndroidManifest.xml nggak ketemu!"
+            exit 1
           fi
+          
+          echo "✓ Manifest: $MANIFEST"
+          APP_DIR=$(dirname "$(dirname "$MANIFEST")")
+          echo "✓ App dir: $APP_DIR"
+          
+          cp "$MANIFEST" "$MANIFEST.bak"
+          
+          echo "── Hapus semua referensi icon/theme/logo yang bermasalah ──"
+          sed -i 's/[[:space:]]*android:icon="[^"]*"//g' "$MANIFEST"
+          sed -i 's/[[:space:]]*android:roundIcon="[^"]*"//g' "$MANIFEST"
+          sed -i 's/[[:space:]]*android:theme="@mipmap\/[^"]*"//g' "$MANIFEST"
+          sed -i 's/[[:space:]]*android:logo="[^"]*"//g' "$MANIFEST"
+          
+          echo "── Manifest sesudah fix ──"
+          grep -n "icon\|theme\|logo" "$MANIFEST" || echo "(semua referensi icon dihapus)"
+          
+          DRAWABLE_DIR="$APP_DIR/res/drawable"
+          mkdir -p "$DRAWABLE_DIR"
+          echo "✓ Drawable dir: $DRAWABLE_DIR"
+          
+          SYNC_JPG=$(find "$WORKSPACE/source" -name "sync.jpg" -o -name "sync.jpeg" -o -name "sync.png" | head -1)
+          if [ -n "$SYNC_JPG" ]; then
+            echo "✓ Ketemu: $SYNC_JPG"
+            cp "$SYNC_JPG" "$DRAWABLE_DIR/sync.jpg"
+            for MIPMAP in mipmap-hdpi mipmap-mdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+              mkdir -p "$APP_DIR/res/$MIPMAP"
+              cp "$SYNC_JPG" "$APP_DIR/res/$MIPMAP/ic_launcher.png" 2>/dev/null || true
+              cp "$SYNC_JPG" "$APP_DIR/res/$MIPMAP/ic_launcher_round.png" 2>/dev/null || true
+            done
+            echo "✓ sync.jpg dicopy ke drawable & mipmap"
+          else
+            echo "⚠ sync.jpg nggak ketemu, bikin placeholder"
+            echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" | base64 -d > "$DRAWABLE_DIR/sync.png"
+            cp "$DRAWABLE_DIR/sync.png" "$DRAWABLE_DIR/sync.jpg"
+            for MIPMAP in mipmap-hdpi mipmap-mdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+              mkdir -p "$APP_DIR/res/$MIPMAP"
+              cp "$DRAWABLE_DIR/sync.png" "$APP_DIR/res/$MIPMAP/ic_launcher.png"
+              cp "$DRAWABLE_DIR/sync.png" "$APP_DIR/res/$MIPMAP/ic_launcher_round.png"
+            done
+            echo "✓ Placeholder icon dibuat"
+          fi
+          
+          echo "── Tambahin android:icon balik ke <application> ──"
+          if grep -q '<application' "$MANIFEST"; then
+            sed -i 's/[[:space:]]*android:icon="[^"]*"//g' "$MANIFEST"
+            sed -i 's/[[:space:]]*android:roundIcon="[^"]*"//g' "$MANIFEST"
+            sed -i 's|<application|<application android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"|' "$MANIFEST"
+            echo "✓ android:icon ditambahin"
+          fi
+          
+          echo "── Isi folder drawable ──"
+          ls -la "$DRAWABLE_DIR/" || true
+          
+          echo "── Isi folder mipmap-hdpi ──"
+          ls -la "$APP_DIR/res/mipmap-hdpi/" || true
+          
+          echo "✓ FIX SELESAI"
 
       - name: AUTO-DETECT & BUILD
         run: |
@@ -121,7 +149,6 @@ jobs:
           echo "Workspace: $WORKSPACE"
           ls -la "$WORKSPACE/source/" | head -10
           
-          # MODE 1: APK mentah
           APK_FILE=$(find "$WORKSPACE/source" -name "*.apk" -type f | head -1)
           if [ -n "$APK_FILE" ]; then
             echo "✓ MODE 1: Ketemu APK mentah: $APK_FILE"
@@ -130,7 +157,6 @@ jobs:
             exit 0
           fi
           
-          # MODE 2: apktool
           APKTOOL_YML=$(find "$WORKSPACE/source" -name "apktool.yml" -type f | head -1)
           if [ -n "$APKTOOL_YML" ]; then
             echo "✓ MODE 2: Ketemu apktool.yml: $APKTOOL_YML"
@@ -145,7 +171,6 @@ jobs:
             fi
           fi
           
-          # MODE 3: Gradle
           GRADLE_FILE=$(find "$WORKSPACE/source" -name "build.gradle" -o -name "build.gradle.kts" | head -1)
           if [ -n "$GRADLE_FILE" ]; then
             echo "✓ MODE 3: Ketemu build.gradle: $GRADLE_FILE"
@@ -184,7 +209,6 @@ jobs:
             fi
           fi
           
-          # MODE 4: Cari APK di mana aja
           echo "── MODE 4: Cari APK di mana aja ──"
           ANY_APK=$(find "$WORKSPACE" -name "*.apk" -type f 2>/dev/null | head -1)
           if [ -n "$ANY_APK" ]; then
