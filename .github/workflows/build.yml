@@ -36,19 +36,25 @@ jobs:
           export ANDROID_HOME=$HOME/android-sdk
           mkdir -p $ANDROID_HOME/cmdline-tools
           cd $ANDROID_HOME/cmdline-tools
-          
           wget -q --timeout=60 --tries=3 \
             "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
             -O cmdline-tools.zip
-          
           unzip -q cmdline-tools.zip
           mv cmdline-tools latest
-          
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "build-tools;34.0.0" "platforms;android-34" 2>&1 | tail -5
+          sdkmanager "build-tools;34.0.0" "platforms;android-34" 2>&1 | tail -3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Install apktool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq apktool zipalign wget unzip
 
       - name: Download & Extract ZIP
         run: |
@@ -56,54 +62,85 @@ jobs:
           wget -q -O source.zip "${{ github.event.inputs.zip_url }}"
           unzip -q source.zip -d source/
           echo "── Isi source/ ──"
-          ls -la source/
+          find source -type f | head -30
 
-      - name: Cari Project Root
+      - name: AUTO-DETECT & BUILD
         run: |
-          # Cari folder yang ada build.gradle
-          PROJECT_ROOT=""
-          if [ -f "source/build.gradle" ]; then
-            PROJECT_ROOT="source"
-          elif [ -f "source/android/build.gradle" ]; then
-            PROJECT_ROOT="source/android"
-          else
-            # Cari build.gradle di mana aja
-            GRADLE_FILE=$(find source -name "build.gradle" -type f | head -1)
-            if [ -n "$GRADLE_FILE" ]; then
-              PROJECT_ROOT=$(dirname "$GRADLE_FILE")
+          echo "════════════════════════════════════════"
+          echo "  AUTO-DETECT MODE"
+          echo "════════════════════════════════════════"
+          
+          # MODE 1: APK mentah
+          APK_FILE=$(find source -name "*.apk" -type f | head -1)
+          if [ -n "$APK_FILE" ]; then
+            echo "✓ MODE 1: Ketemu APK mentah: $APK_FILE"
+            cp "$APK_FILE" unsigned.apk
+            exit 0
+          fi
+          
+          # MODE 2: apktool (ada apktool.yml)
+          APKTOOL_YML=$(find source -name "apktool.yml" -type f | head -1)
+          if [ -n "$APKTOOL_YML" ]; then
+            echo "✓ MODE 2: Ketemu apktool.yml: $APKTOOL_YML"
+            APKTOOL_DIR=$(dirname "$APKTOOL_YML")
+            cd "$APKTOOL_DIR"
+            apktool b -o $GITHUB_WORKSPACE/unsigned.apk 2>&1 | tail -20
+            cd $GITHUB_WORKSPACE
+            if [ -f unsigned.apk ]; then
+              echo "✓ apktool b sukses"
+              exit 0
             fi
           fi
           
-          if [ -z "$PROJECT_ROOT" ]; then
-            echo "✗ NGGAK ADA build.gradle di ZIP!"
-            find source -type f | head -30
-            exit 1
+          # MODE 3: Gradle (ada build.gradle)
+          GRADLE_FILE=$(find source -name "build.gradle" -o -name "build.gradle.kts" | head -1)
+          if [ -n "$GRADLE_FILE" ]; then
+            echo "✓ MODE 3: Ketemu build.gradle: $GRADLE_FILE"
+            GRADLE_DIR=$(dirname "$GRADLE_FILE")
+            cd "$GRADLE_DIR"
+            chmod +x gradlew 2>/dev/null || true
+            
+            if [ -f "gradlew" ]; then
+              echo "── Pake gradlew ──"
+              ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
+            else
+              echo "── Pake gradle global ──"
+              gradle assembleDebug --no-daemon 2>&1 | tail -30
+            fi
+            
+            APK_RESULT=$(find . -name "*.apk" -path "*/build/outputs/*" | head -1)
+            if [ -z "$APK_RESULT" ]; then
+              APK_RESULT=$(find . -name "*.apk" -type f | head -1)
+            fi
+            
+            if [ -n "$APK_RESULT" ]; then
+              echo "✓ Gradle build sukses: $APK_RESULT"
+              cp "$APK_RESULT" $GITHUB_WORKSPACE/unsigned.apk
+              exit 0
+            fi
           fi
           
-          echo "✓ Project root: $PROJECT_ROOT"
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
+          # MODE 4: Cari .apk di mana aja
+          echo "── MODE 4: Cari APK di mana aja ──"
+          ANY_APK=$(find source -name "*.apk" -type f | head -1)
+          if [ -n "$ANY_APK" ]; then
+            echo "✓ Ketemu: $ANY_APK"
+            cp "$ANY_APK" unsigned.apk
+            exit 0
+          fi
+          
+          echo "✗ SEMUA MODE GAGAL! Isi ZIP lu:"
+          find source -type f
+          exit 1
 
-      - name: Build APK (Gradle)
+      - name: Cek Hasil Build
         run: |
-          cd ${{ env.PROJECT_ROOT }}
-          chmod +x gradlew || true
-          
-          echo "── Running gradlew assembleDebug ──"
-          ./gradlew assembleDebug --no-daemon 2>&1 | tail -50 || {
-            echo "✗ GRADLE BUILD GAGAL!"
-            exit 1
-          }
-          
-          # Cari APK hasil build
-          APK_FILE=$(find . -name "*.apk" -path "*/build/outputs/*" | head -1)
-          if [ -z "$APK_FILE" ]; then
-            echo "✗ APK hasil build nggak ketemu!"
-            find . -name "*.apk" 2>/dev/null
+          if [ ! -f unsigned.apk ]; then
+            echo "✗ unsigned.apk NGGAK ADA!"
             exit 1
           fi
-          
-          echo "✓ APK: $APK_FILE"
-          cp "$APK_FILE" $GITHUB_WORKSPACE/unsigned.apk
+          ls -la unsigned.apk
+          file unsigned.apk
 
       - name: Generate Keystore
         run: |
@@ -123,7 +160,6 @@ jobs:
           SAFE_NAME=$(echo "${{ github.event.inputs.app_name }}" | tr -cd 'A-Za-z0-9_-')
           [ -z "$SAFE_NAME" ] && SAFE_NAME="app"
           OUTPUT_NAME="${SAFE_NAME}.apk"
-          
           $BUILD_TOOLS/zipalign -v 4 unsigned.apk aligned.apk
           $BUILD_TOOLS/apksigner sign \
             --ks debug.keystore \
@@ -131,7 +167,6 @@ jobs:
             --key-pass pass:android \
             --out "$OUTPUT_NAME" \
             aligned.apk
-          
           echo "OUTPUT_APK=$OUTPUT_NAME" >> $GITHUB_ENV
           ls -la "$OUTPUT_NAME"
 
