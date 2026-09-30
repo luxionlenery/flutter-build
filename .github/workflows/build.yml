@@ -65,6 +65,52 @@ jobs:
           echo "── Isi source/ ──"
           find source -type f | head -40
 
+      - name: FIX ICON & MANIFEST
+        run: |
+          WORKSPACE="$GITHUB_WORKSPACE"
+          echo "════════════════════════════════════════"
+          echo "  FIX ICON & MANIFEST"
+          echo "════════════════════════════════════════"
+          
+          MANIFEST=$(find "$WORKSPACE/source" -name "AndroidManifest.xml" -path "*/app/src/main/*" | head -1)
+          if [ -z "$MANIFEST" ]; then
+            MANIFEST=$(find "$WORKSPACE/source" -name "AndroidManifest.xml" | head -1)
+          fi
+          
+          if [ -n "$MANIFEST" ]; then
+            echo "✓ Manifest: $MANIFEST"
+            echo "── Isi manifest sebelum fix ──"
+            grep -n "icon" "$MANIFEST" || echo "(nggak ada baris icon)"
+            
+            # Ganti semua referensi mipmap/ic_launcher ke drawable/sync
+            sed -i 's|@mipmap/ic_launcher_round|@drawable/sync|g' "$MANIFEST"
+            sed -i 's|@mipmap/ic_launcher|@drawable/sync|g' "$MANIFEST"
+            sed -i 's|@mipmap/ic_launcher_foreground|@drawable/sync|g' "$MANIFEST"
+            sed -i 's|@mipmap/ic_launcher_background|@drawable/sync|g' "$MANIFEST"
+            
+            echo "── Isi manifest sesudah fix ──"
+            grep -n "icon" "$MANIFEST" || echo "(nggak ada baris icon)"
+            
+            # Pindahin sync.jpg ke res/drawable
+            APP_DIR=$(dirname "$(dirname "$MANIFEST")")
+            DRAWABLE_DIR="$APP_DIR/res/drawable"
+            mkdir -p "$DRAWABLE_DIR"
+            
+            SYNC_JPG=$(find "$WORKSPACE/source" -name "sync.jpg" | head -1)
+            if [ -n "$SYNC_JPG" ]; then
+              cp "$SYNC_JPG" "$DRAWABLE_DIR/sync.jpg"
+              echo "✓ sync.jpg dipindah ke: $DRAWABLE_DIR/sync.jpg"
+            else
+              echo "⚠ sync.jpg nggak ketemu, bikin placeholder"
+              # Bikin 1x1 pixel jpg sebagai fallback
+              echo "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==" | base64 -d > "$DRAWABLE_DIR/sync.jpg"
+            fi
+            
+            ls -la "$DRAWABLE_DIR/"
+          else
+            echo "✗ AndroidManifest.xml nggak ketemu!"
+          fi
+
       - name: AUTO-DETECT & BUILD
         run: |
           echo "════════════════════════════════════════"
@@ -106,14 +152,12 @@ jobs:
             GRADLE_DIR=$(dirname "$GRADLE_FILE")
             cd "$GRADLE_DIR"
             
-            # Kalau gradle-wrapper.jar nggak ada, pake gradle global
             if [ -f "gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
               echo "── Pake gradlew ──"
               chmod +x gradlew
               ./gradlew assembleDebug --no-daemon 2>&1 | tail -40
             else
               echo "── Wrapper nggak ada, pake gradle global ──"
-              # Bikin settings.gradle kalau nggak ada
               if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
                 echo "── Bikin settings.gradle otomatis ──"
                 echo "include ':app'" > settings.gradle
